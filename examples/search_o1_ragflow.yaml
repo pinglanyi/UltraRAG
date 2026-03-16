@@ -1,0 +1,51 @@
+# Search-o1 Pipeline with RAGFlow Knowledge Base Retriever
+#
+# Differences from search_o1.yaml:
+#   - Uses `ragflow_retriever` server instead of the local `retriever` server
+#   - Retrieval calls ragflow_retriever.ragflow_retriever_search, which
+#     queries the RAGFlow REST API (/api/v1/retrieval) against configured
+#     knowledge-base dataset IDs
+#   - All other stages (generation, prompt, evaluation, router, custom)
+#     remain identical to the standard Search-o1 pipeline
+
+# MCP Servers
+servers:
+  benchmark: servers/benchmark
+  generation: servers/generation
+  ragflow_retriever: servers/ragflow_retriever
+  prompt: servers/prompt
+  evaluation: servers/evaluation
+  router: servers/router
+  custom: servers/custom
+
+# MCP Client Pipeline
+pipeline:
+- benchmark.get_data
+- ragflow_retriever.ragflow_retriever_init
+- generation.generation_init
+- custom.search_o1_init_list
+- prompt.search_o1_init
+- generation.generate
+- loop:
+    times: 10
+    steps:
+    - branch:
+        router:
+        - router.search_o1_check
+        branches:
+          retrieve:
+          - custom.search_o1_query_extract
+          - ragflow_retriever.ragflow_retriever_search:
+              input:
+                query_list: extract_query_list
+          - custom.search_o1_reasoning_extract
+          - custom.search_o1_combine_list
+          - prompt.search_o1_reasoning_indocument
+          - generation.generate
+          - custom.search_o1_extract_final_information
+          - custom.search_o1_combine_final_information
+          - prompt.search_o1_insert
+          - generation.generate
+          stop: []
+- custom.output_extract_from_boxed
+- evaluation.evaluate

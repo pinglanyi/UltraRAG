@@ -71,6 +71,17 @@ def load_prompt_template(template_path: Union[str, Path]) -> Template:
     return _sandboxed_env.from_string(template_content)
 
 
+def _load_background(background_file: str) -> str:
+    """Load background knowledge from file; return empty string on any failure."""
+    if not background_file or background_file.startswith("$"):
+        return ""
+    try:
+        with open(background_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _safe_render(template: Template, **kwargs: Any) -> str:
     """Safely render a template with escaped user inputs.
     
@@ -485,37 +496,42 @@ def r1_searcher_gen(
     return ret
 
 
-@app.prompt(output="q_ls,searcho1_reasoning_template->prompt_ls")
+@app.prompt(output="q_ls,searcho1_reasoning_template,searcho1_background_file->prompt_ls")
 def search_o1_init(
     q_ls: List[str],
     template: Union[str, Path],
+    background_file: str = "",
 ) -> List[PromptMessage]:
     """Generate prompts for Search O1 initialization.
 
     Args:
         q_ls: List of questions
         template: Path to Jinja2 template file
+        background_file: Optional path to a background knowledge text file;
+            its content is injected as {{background}} in the template.
 
     Returns:
         List of PromptMessage objects
     """
     template: Template = load_prompt_template(template)
+    background = _load_background(background_file)
 
     ret = []
     for q in q_ls:
-        p = _safe_render(template, question=q)
+        p = _safe_render(template, question=q, background=background)
         ret.append(p)
     return ret
 
 
 @app.prompt(
-    output="extract_query_list, ret_psg, total_reason_list, searcho1_refine_template -> prompt_ls"
+    output="extract_query_list, ret_psg, total_reason_list, searcho1_refine_template, searcho1_background_file -> prompt_ls"
 )
 def search_o1_reasoning_indocument(
     extract_query_list: List[str],
     ret_psg: List[List[str]],
     total_reason_list: List[List[str]],
     template: Union[str, Path],
+    background_file: str = "",
 ) -> List[PromptMessage]:
     """Generate prompts for Search O1 reasoning in document step.
 
@@ -524,11 +540,13 @@ def search_o1_reasoning_indocument(
         ret_psg: List of retrieved passage lists (one per query)
         total_reason_list: List of reasoning history lists (one per query)
         template: Path to Jinja2 template file
+        background_file: Optional path to a background knowledge text file.
 
     Returns:
         List of PromptMessage objects
     """
     template: Template = load_prompt_template(template)
+    background = _load_background(background_file)
     ret = []
 
     for squery, psg_list, history_steps in zip(
@@ -551,6 +569,7 @@ def search_o1_reasoning_indocument(
             prev_reasoning=formatted_history_str,
             search_query=squery,
             document=passage_text,
+            background=background,
         )
         ret.append(p)
 
@@ -558,13 +577,14 @@ def search_o1_reasoning_indocument(
 
 
 @app.prompt(
-    output="q_ls,total_subq_list,total_final_info_list,searcho1_reasoning_template->prompt_ls"
+    output="q_ls,total_subq_list,total_final_info_list,searcho1_reasoning_template,searcho1_background_file->prompt_ls"
 )
 def search_o1_insert(
     q_ls: List[str],
     total_subq_list: List[List[str]],
     total_final_info_list: List[List[str]],
     template: Union[str, Path],
+    background_file: str = "",
 ) -> List[PromptMessage]:
     """Generate prompts for Search O1 by inserting sub-queries and results.
 
@@ -573,14 +593,16 @@ def search_o1_insert(
         total_subq_list: List of sub-query lists (one per question)
         total_final_info_list: List of final info lists (one per question)
         template: Path to Jinja2 template file
+        background_file: Optional path to a background knowledge text file.
 
     Returns:
         List of PromptMessage objects
     """
     template: Template = load_prompt_template(template)
+    background = _load_background(background_file)
     prompt_ls = []
     for q in q_ls:
-        p = _safe_render(template, question=q)
+        p = _safe_render(template, question=q, background=background)
         prompt_ls.append(p)
 
     ret = []

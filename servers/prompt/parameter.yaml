@@ -13,9 +13,15 @@ search_r1_gen_template: prompt/search_r1_append.jinja
 # R1-Searcher
 r1_searcher_gen_template: prompt/r1_searcher_append.jinja
 
-# Search-o1
+# Search-o1 (原始通用版，英文 web-search 场景)
 searcho1_reasoning_template: prompt/search_o1_reasoning.jinja
 searcho1_refine_template: prompt/search_o1_refinement.jinja
+
+# Search-o1 RAGFlow 版（中文注塑机知识库场景）
+# 若需要切换到 RAGFlow 版，将下面三行取消注释，并注释上面两行
+# searcho1_reasoning_template: prompt/search_o1_reasoning_ragflow.jinja
+# searcho1_refine_template: prompt/search_o1_refinement_ragflow.jinja
+# searcho1_background_file: prompt/ragflow_background.md
 
 
 # For other prompts, please add parameters here as needed

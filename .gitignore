@@ -33,3 +33,4 @@ servers/*/server.yaml
 
 # Python package metadata
 src/*.egg-info/
+volumes/
