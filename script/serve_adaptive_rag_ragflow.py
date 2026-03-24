@@ -39,6 +39,7 @@ from typing import Any, Dict, Optional
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ── path setup ────────────────────────────────────────────────────────────────
@@ -155,6 +156,67 @@ async def query_endpoint(req: QueryRequest):
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@fastapi_app.post("/query/stream")
+async def query_stream_endpoint(req: QueryRequest):
+    """Streaming variant — returns Server-Sent Events.
+
+    Each event is a JSON line prefixed with ``data: ``.
+    Event types:
+      * ``{"type": "token",    "content": "<text>"}``  — incremental token
+      * ``{"type": "step_end","name": "<step>", ...}``  — step completed
+      * ``{"type": "sources", "data": [...]}``          — retrieved sources
+      * ``{"type": "done",    "answer": "<text>"}``     — final answer (stream end)
+      * ``{"type": "error",   "detail": "<msg>"}``      — error (stream end)
+    """
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    if _pipeline_client is None or _pipeline_context is None:
+        raise HTTPException(status_code=503, detail="Pipeline not ready yet")
+
+    queue: asyncio.Queue = asyncio.Queue()
+    _SENTINEL = object()
+
+    async def _callback(event: Dict[str, Any]) -> None:
+        await queue.put(event)
+
+    async def _run_pipeline():
+        try:
+            override: Dict[str, Any] = {"query_input": {"queries": [req.query]}}
+            gen_cfg = _service_cfg.get("generation", {})
+            if gen_cfg:
+                override["generation"] = copy.deepcopy(gen_cfg)
+
+            from ultrarag.client import execute_pipeline
+
+            async with _request_lock:
+                result = await execute_pipeline(
+                    _pipeline_client,
+                    _pipeline_context,
+                    return_all=True,
+                    stream_callback=_callback,
+                    override_params=override,
+                )
+
+            answer = _extract_answer(result)
+            await queue.put({"type": "done", "answer": answer})
+        except Exception as exc:
+            await queue.put({"type": "error", "detail": str(exc)})
+        finally:
+            await queue.put(_SENTINEL)
+
+    async def _event_generator():
+        asyncio.create_task(_run_pipeline())
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            line = "data: " + json.dumps(item, ensure_ascii=False) + "\n\n"
+            yield line.encode()
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
