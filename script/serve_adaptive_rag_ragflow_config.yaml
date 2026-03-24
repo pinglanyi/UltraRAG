@@ -21,7 +21,7 @@ generation:
     openai:
       model_name: "deepseek-chat"
       base_url: "https://api.deepseek.com/v1"
-      api_key: "sk-309d61809a594b3b8f854cd9522ffb7c"            # ← 在此配置 API key
+      api_key: ""            # ← 在此配置 API key
       concurrency: 4
       retries: 3
       base_delay: 1.0
