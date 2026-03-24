@@ -276,5 +276,53 @@ def surveycpm_state_router(
     }
 
 
+@app.tool(
+    output=(
+        "stage_ls,ans_ls,q_ls,ret_psg_top5,ret_psg_ext5->"
+        "stage_ls,ans_ls,q_ls,ret_psg_top5,ret_psg_ext5"
+    )
+)
+def adaptive_rag_router(
+    stage_ls: List[str],
+    ans_ls: List[str],
+    q_ls: List[str],
+    ret_psg_top5: List[List[Any]],
+    ret_psg_ext5: List[List[Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Route Adaptive RAG items to stage1 / stage2 / stage3 / done branches.
+
+    Args:
+        stage_ls: Current stage per sample ("stage1", "stage2", "stage3", "done")
+        ans_ls: Current answers per sample
+        q_ls: Original questions per sample
+        ret_psg_top5: Top-5 retrieved passages per sample
+        ret_psg_ext5: Extended (5-10) retrieved passages per sample
+
+    Returns:
+        All five lists wrapped with per-sample routing states.
+    """
+    stage_out: List[Dict[str, Any]] = []
+    ans_out: List[Dict[str, Any]] = []
+    q_out: List[Dict[str, Any]] = []
+    top5_out: List[Dict[str, Any]] = []
+    ext5_out: List[Dict[str, Any]] = []
+
+    for stage, ans, q, top5, ext5 in zip(stage_ls, ans_ls, q_ls, ret_psg_top5, ret_psg_ext5):
+        state = stage  # "stage1" | "stage2" | "stage3" | "done"
+        stage_out.append({"data": stage, "state": state})
+        ans_out.append({"data": ans, "state": state})
+        q_out.append({"data": q, "state": state})
+        top5_out.append({"data": top5, "state": state})
+        ext5_out.append({"data": ext5, "state": state})
+
+    return {
+        "stage_ls": stage_out,
+        "ans_ls": ans_out,
+        "q_ls": q_out,
+        "ret_psg_top5": top5_out,
+        "ret_psg_ext5": ext5_out,
+    }
+
+
 if __name__ == "__main__":
     app.run(transport="stdio")

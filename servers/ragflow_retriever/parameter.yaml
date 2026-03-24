@@ -1,9 +1,11 @@
 # RAGFlow 连接
-ragflow_base_url: "http://10.65.8.100:9222"
+ragflow_base_url: "http://10.32.1.172:9222"
 ragflow_api_key: "ragflow-pFtiRyvxRi9TKTNkBdbgm8DTwmyvhmNRztdeWD9dfFM"
 
 # 知识库
 ragflow_dataset_ids:
+  - "b003993a274f11f1b0904d93f269c4c9"    # 友商产品
+  - "ac51ec84274e11f1b0904d93f269c4c9"    # EST产品尺寸与重量
   - "77f18dd413a111f1a997d7fc880a5573"    # 401070020_P10EHS4上位机_震雄10寸_image
   - "314f5ece13a111f1a997d7fc880a5573"    # 401140025_G15FH5-TC上位机_震雄15寸_image
   - "f1632cc813a011f1a997d7fc880a5573"    # 401140001_G15EHS2-TC上位机_震雄15寸_image

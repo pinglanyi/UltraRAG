@@ -1798,5 +1798,144 @@ def surveycpm_format_output(
     return {"ans_ls": ans_ls}
 
 
+# ==================== Adaptive RAG ====================
+
+
+@app.tool(output="ret_psg->ret_psg_top5,ret_psg_ext5,stage_ls,ans_ls")
+def adaptive_rag_init(ret_psg: List[List[str]]) -> Dict[str, Any]:
+    """Initialize Adaptive RAG state: split top-10 passages into top-5 and ext-5.
+
+    Args:
+        ret_psg: Retrieved passages per query (each list has up to 10 items)
+
+    Returns:
+        ret_psg_top5: First 5 passages per query
+        ret_psg_ext5: Passages 5-10 per query
+        stage_ls: Initial stage for each query ("stage1")
+        ans_ls: Initial empty answers
+    """
+    top5 = [psg[:5] for psg in ret_psg]
+    ext5 = [psg[5:10] for psg in ret_psg]
+    stages = ["stage1"] * len(ret_psg)
+    ans = [""] * len(ret_psg)
+    return {"ret_psg_top5": top5, "ret_psg_ext5": ext5, "stage_ls": stages, "ans_ls": ans}
+
+
+@app.tool(output="ans_ls,stage_ls->ans_ls,stage_ls")
+def adaptive_rag_after_stage1(ans_ls: List[str], stage_ls: List[str]) -> Dict[str, List]:
+    """Advance pipeline stage after Stage-1 generation.
+
+    Checks for <|satisfied|> token; if found marks as done, otherwise advances to stage2.
+
+    Args:
+        ans_ls: LLM outputs from Stage 1
+        stage_ls: Current stages
+
+    Returns:
+        Updated ans_ls and stage_ls ("done" or "stage2")
+    """
+    new_stages = []
+    for ans, stage in zip(ans_ls, stage_ls):
+        if stage == "done":
+            new_stages.append("done")
+        elif "<|satisfied|>" in ans:
+            new_stages.append("done")
+        else:
+            new_stages.append("stage2")
+    return {"ans_ls": ans_ls, "stage_ls": new_stages}
+
+
+@app.tool(output="ans_ls,stage_ls->ans_ls,stage_ls")
+def adaptive_rag_after_stage2(ans_ls: List[str], stage_ls: List[str]) -> Dict[str, List]:
+    """Advance pipeline stage after Stage-2 generation.
+
+    Checks for <|satisfied|> token; if found marks as done, otherwise advances to stage3.
+
+    Args:
+        ans_ls: LLM outputs from Stage 2
+        stage_ls: Current stages
+
+    Returns:
+        Updated ans_ls and stage_ls ("done" or "stage3")
+    """
+    new_stages = []
+    for ans, stage in zip(ans_ls, stage_ls):
+        if stage == "done":
+            new_stages.append("done")
+        elif "<|satisfied|>" in ans:
+            new_stages.append("done")
+        else:
+            new_stages.append("stage3")
+    return {"ans_ls": ans_ls, "stage_ls": new_stages}
+
+
+@app.tool(output="ans_ls,q_ls->subquery_list")
+def adaptive_rag_extract_rewrite(ans_ls: List[str], q_ls: List[str]) -> Dict[str, List[str]]:
+    """Extract rewritten query from the rewrite LLM output for re-retrieval.
+
+    Looks for <|rewrite_query|>...<|/rewrite_query|> tags; falls back to original question.
+
+    Args:
+        ans_ls: LLM outputs from the rewrite step (contain rewrite_query tags)
+        q_ls: Original questions (fallback)
+
+    Returns:
+        subquery_list: One rewritten query string per question
+    """
+    pattern = re.compile(r"<\|rewrite_query\|>(.*?)<\|/rewrite_query\|>", re.DOTALL)
+
+    subquery_list = []
+    for ans, q in zip(ans_ls, q_ls):
+        matches = pattern.findall(ans)
+        if matches:
+            subquery_list.append(matches[0].strip())
+        else:
+            # Fallback: use original question
+            subquery_list.append(q)
+    return {"subquery_list": subquery_list}
+
+
+@app.tool(output="ret_psg_top5,ret_psg_ext5,ret_psg->all_passages")
+def adaptive_rag_merge_passages(
+    ret_psg_top5: List[List[str]],
+    ret_psg_ext5: List[List[str]],
+    ret_psg: List[List[str]],
+) -> Dict[str, List[List[str]]]:
+    """Merge passages from all retrieval stages, deduplicating by content.
+
+    Args:
+        ret_psg_top5: Top-5 passages from initial retrieval
+        ret_psg_ext5: Extended passages (5-10) from initial retrieval
+        ret_psg: Passages from sub-query re-retrieval (Stage 3)
+
+    Returns:
+        all_passages: Deduplicated combined passages per query
+    """
+    merged = []
+    for top5, ext5, sub in zip(ret_psg_top5, ret_psg_ext5, ret_psg):
+        combined = list(top5) + list(ext5) + list(sub)
+        seen: set = set()
+        unique = []
+        for p in combined:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        merged.append(unique)
+    return {"all_passages": merged}
+
+
+@app.tool(output="stage_ls->stage_ls")
+def adaptive_rag_done(stage_ls: List[str]) -> Dict[str, List[str]]:
+    """Mark all items in the current batch as done (Stage 3 completed).
+
+    Args:
+        stage_ls: Current stages (all expected to be "stage3")
+
+    Returns:
+        stage_ls: All set to "done"
+    """
+    return {"stage_ls": ["done"] * len(stage_ls)}
+
+
 if __name__ == "__main__":
     app.run(transport="stdio")

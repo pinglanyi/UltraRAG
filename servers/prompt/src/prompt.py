@@ -1102,5 +1102,141 @@ def surveycpm_extend_plan(
     return ret
 
 
+# ==================== Adaptive RAG Prompts ====================
+
+
+@app.prompt(
+    output="q_ls,ret_psg_top5,adaptive_rag_stage1_template,adaptive_rag_background_file->prompt_ls"
+)
+def adaptive_rag_stage1_prompt(
+    q_ls: List[str],
+    ret_psg: List[List[str]],
+    template: Union[str, Path],
+    background_file: str = "",
+) -> List[PromptMessage]:
+    """Generate Stage-1 prompts: answer with top-5 passages and self-assess quality.
+
+    Args:
+        q_ls: List of questions
+        ret_psg: Top-5 retrieved passages per question
+        template: Path to Jinja2 template file
+        background_file: Optional background knowledge file
+
+    Returns:
+        List of PromptMessage objects
+    """
+    tmpl = load_prompt_template(template)
+    background = _load_background(background_file)
+    ret = []
+    for q, psg_list in zip(q_ls, ret_psg):
+        passage_text = "\n\n".join(
+            f"[文档{i + 1}]\n{p}" for i, p in enumerate(psg_list)
+        )
+        p = _safe_render(tmpl, question=q, documents=passage_text, background=background)
+        ret.append(p)
+    return ret
+
+
+@app.prompt(
+    output="q_ls,ret_psg_ext5,ans_ls,adaptive_rag_stage2_template,adaptive_rag_background_file->prompt_ls"
+)
+def adaptive_rag_stage2_prompt(
+    q_ls: List[str],
+    ret_psg_ext5: List[List[str]],
+    ans_ls: List[str],
+    template: Union[str, Path],
+    background_file: str = "",
+) -> List[PromptMessage]:
+    """Generate Stage-2 prompts: answer with ext-5 passages only (docs 6-10).
+
+    Args:
+        q_ls: List of questions
+        ret_psg_ext5: Extended passages (docs 6-10) per question
+        ans_ls: Previous Stage-1 answers
+        template: Path to Jinja2 template file
+        background_file: Optional background knowledge file
+
+    Returns:
+        List of PromptMessage objects
+    """
+    tmpl = load_prompt_template(template)
+    background = _load_background(background_file)
+    ret = []
+    for q, ext5, prev_ans in zip(q_ls, ret_psg_ext5, ans_ls):
+        passage_text = "\n\n".join(
+            f"[文档{i + 6}]\n{p}" for i, p in enumerate(ext5)
+        )
+        p = _safe_render(
+            tmpl,
+            question=q,
+            documents=passage_text,
+            prev_answer=prev_ans,
+            background=background,
+        )
+        ret.append(p)
+    return ret
+
+
+@app.prompt(
+    output="q_ls,ans_ls,adaptive_rag_rewrite_template,adaptive_rag_background_file->prompt_ls"
+)
+def adaptive_rag_rewrite_prompt(
+    q_ls: List[str],
+    ans_ls: List[str],
+    template: Union[str, Path],
+    background_file: str = "",
+) -> List[PromptMessage]:
+    """Generate query-rewrite prompts for Stage-3 based on stages 1&2 results.
+
+    Args:
+        q_ls: List of original questions
+        ans_ls: Stage-2 answers (capturing why both batches were insufficient)
+        template: Path to Jinja2 template file
+        background_file: Optional background knowledge file
+
+    Returns:
+        List of PromptMessage objects
+    """
+    tmpl = load_prompt_template(template)
+    background = _load_background(background_file)
+    ret = []
+    for q, prev_ans in zip(q_ls, ans_ls):
+        p = _safe_render(tmpl, question=q, prev_answer=prev_ans, background=background)
+        ret.append(p)
+    return ret
+
+
+@app.prompt(
+    output="q_ls,all_passages,adaptive_rag_stage3_template,adaptive_rag_background_file->prompt_ls"
+)
+def adaptive_rag_stage3_prompt(
+    q_ls: List[str],
+    all_passages: List[List[str]],
+    template: Union[str, Path],
+    background_file: str = "",
+) -> List[PromptMessage]:
+    """Generate Stage-3 prompts: final answer with all passages from all retrieval stages.
+
+    Args:
+        q_ls: List of questions
+        all_passages: Merged passages from all retrieval rounds
+        template: Path to Jinja2 template file
+        background_file: Optional background knowledge file
+
+    Returns:
+        List of PromptMessage objects
+    """
+    tmpl = load_prompt_template(template)
+    background = _load_background(background_file)
+    ret = []
+    for q, psg_list in zip(q_ls, all_passages):
+        passage_text = "\n\n".join(
+            f"[文档{i + 1}]\n{p}" for i, p in enumerate(psg_list)
+        )
+        p = _safe_render(tmpl, question=q, documents=passage_text, background=background)
+        ret.append(p)
+    return ret
+
+
 if __name__ == "__main__":
     app.run(transport="stdio")

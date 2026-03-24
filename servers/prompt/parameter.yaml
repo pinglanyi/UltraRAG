@@ -24,6 +24,13 @@ searcho1_refine_template: prompt/search_o1_refinement.jinja
 # searcho1_background_file: prompt/ragflow_background.md
 
 
+# Adaptive RAG（自适应分阶段检索，中文注塑机知识库场景）
+adaptive_rag_stage1_template: prompt/adaptive_rag_stage1.jinja
+adaptive_rag_stage2_template: prompt/adaptive_rag_stage2.jinja
+adaptive_rag_stage3_template: prompt/adaptive_rag_stage3.jinja
+adaptive_rag_rewrite_template: prompt/adaptive_rag_rewrite.jinja
+adaptive_rag_background_file: prompt/ragflow_background.md
+
 # For other prompts, please add parameters here as needed
 
 # Take webnote as an example:

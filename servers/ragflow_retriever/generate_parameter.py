@@ -34,7 +34,7 @@ def get_all_datasets(base_url, api_key):
     return all_datasets
 
 # ── 配置 ──────────────────────────────────────────────────
-BASE_URL = "http://10.65.8.100:9222"
+BASE_URL = "http://10.32.1.172:9222"
 API_KEY  = "ragflow-pFtiRyvxRi9TKTNkBdbgm8DTwmyvhmNRztdeWD9dfFM"
 OUTPUT   = "servers/ragflow_retriever/parameter.yaml"
 
