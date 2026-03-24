@@ -1,0 +1,55 @@
+# Adaptive RAG API Pipeline with RAGFlow (no benchmark / no evaluation)
+#
+# Used by script/serve_adaptive_rag_ragflow.py.
+# The service injects q_ls directly via the query_input server parameter —
+# no temp files, no file I/O per request.
+#
+# Three-stage quality-gated flow:
+#   Stage 1 – top-5 passages, self-assess → <|satisfied|> or <|need_more|>
+#   Stage 2 – full top-10 passages, self-assess → <|satisfied|> or <|need_subquery|>
+#   Stage 3 – sub-query re-retrieval, merge all passages, final answer
+
+servers:
+  query_input: servers/query_input
+  generation: servers/generation
+  ragflow_retriever: servers/ragflow_retriever
+  prompt: servers/prompt
+  router: servers/router
+  custom: servers/custom
+
+pipeline:
+- query_input.query_input_init
+- ragflow_retriever.ragflow_retriever_init
+- generation.generation_init
+- ragflow_retriever.ragflow_retriever_search:
+    input:
+      query_list: q_ls
+- custom.adaptive_rag_init
+- loop:
+    times: 3
+    steps:
+    - branch:
+        router:
+        - router.adaptive_rag_router
+        branches:
+          stage1:
+          - prompt.adaptive_rag_stage1_prompt
+          - generation.generate
+          - custom.adaptive_rag_after_stage1
+          stage2:
+          - prompt.adaptive_rag_stage2_prompt
+          - generation.generate
+          - custom.adaptive_rag_after_stage2
+          stage3:
+          - prompt.adaptive_rag_rewrite_prompt
+          - generation.generate
+          - custom.adaptive_rag_extract_rewrite
+          - ragflow_retriever.ragflow_retriever_search:
+              input:
+                query_list: subquery_list
+          - custom.adaptive_rag_merge_passages
+          - prompt.adaptive_rag_stage3_prompt
+          - generation.generate
+          - custom.adaptive_rag_done
+          done: []
+- custom.output_extract_from_boxed

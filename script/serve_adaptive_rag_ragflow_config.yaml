@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────
+# Adaptive RAG RAGFlow API Service Configuration
+# ─────────────────────────────────────────────
+
+# HTTP service binding
+host: "0.0.0.0"
+port: 13229
+
+# ── Generation model ──────────────────────────
+# backend: openai | vllm | hf
+generation:
+  backend: openai
+  backend_configs:
+    # openai:
+    #   model_name: "/srv/models/qwen3-8b"
+    #   base_url: "http://localhost:7001/v1"
+    #   api_key: "any"            # ← 在此配置 API key
+    #   concurrency: 4
+    #   retries: 3
+    #   base_delay: 1.0
+    openai:
+      model_name: "deepseek-chat"
+      base_url: "https://api.deepseek.com/v1"
+      api_key: "sk-309d61809a594b3b8f854cd9522ffb7c"            # ← 在此配置 API key
+      concurrency: 4
+      retries: 3
+      base_delay: 1.0
+    vllm:
+      model_name_or_path: "/path/to/model"
+      gpu_ids: "0"
+      gpu_memory_utilization: 0.9
+      dtype: "auto"
+      trust_remote_code: true
+  sampling_params:
+    temperature: 0.7
+    top_p: 0.8
+    max_tokens: 4096
+  extra_params:
+    chat_template_kwargs:
+      enable_thinking: false
+  system_prompt: ""

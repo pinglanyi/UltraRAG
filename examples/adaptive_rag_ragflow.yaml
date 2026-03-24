@@ -1,0 +1,89 @@
+# Adaptive RAG Pipeline with RAGFlow Knowledge Base
+#
+# 三阶段自适应检索生成流程：
+#
+#   阶段1 (Stage 1)
+#     - 检索 top-10 文档，使用 top-5 生成答案
+#     - LLM 自评：若满意 (<|satisfied|>) → 直接输出；否则 → 进入阶段2
+#
+#   阶段2 (Stage 2)
+#     - 使用全部 top-10 文档（包含扩展的 5-10）重新生成
+#     - LLM 自评：若满意 (<|satisfied|>) → 直接输出；否则 → 生成子查询并进入阶段3
+#
+#   阶段3 (Stage 3)
+#     - 从阶段2输出中提取精准子查询，重新检索
+#     - 合并所有阶段检索结果，生成最终答案
+#
+# 检索路径说明（见 prompt/ragflow_background.md）：
+#   建议先检索型号 → 再根据型号检索具体内容 → AI 自动判断是否需要继续
+#
+# 与 search_o1_ragflow.yaml 的区别：
+#   - 固定 top_k=10，分两批（top5 / ext5）逐阶段使用
+#   - 有显式的质量评估机制（<|satisfied|> / <|need_more|> / <|need_subquery|>）
+#   - 最多 3 次 LLM 生成，质量达标即提前退出，避免无效循环
+
+# MCP Servers
+servers:
+  benchmark: servers/benchmark
+  generation: servers/generation
+  ragflow_retriever: servers/ragflow_retriever
+  prompt: servers/prompt
+  evaluation: servers/evaluation
+  router: servers/router
+  custom: servers/custom
+
+# MCP Client Pipeline
+pipeline:
+# ── 初始化 ──────────────────────────────────────────────────
+- benchmark.get_data
+- ragflow_retriever.ragflow_retriever_init       # top_k=10（在 parameter.yaml 中配置）
+- generation.generation_init
+
+# ── 初始检索（使用原始问题，一次取回 top-10）────────────────
+- ragflow_retriever.ragflow_retriever_search:
+    input:
+      query_list: q_ls
+
+# ── 拆分 & 状态初始化 ────────────────────────────────────────
+- custom.adaptive_rag_init                       # 产生 ret_psg_top5, ret_psg_ext5, stage_ls, ans_ls
+
+# ── 主循环（最多 3 次，对应 stage1→stage2→stage3）────────────
+- loop:
+    times: 3
+    steps:
+    - branch:
+        router:
+        - router.adaptive_rag_router             # 按 stage_ls 分发到对应分支
+        branches:
+
+          # ── 阶段1：top-5 生成 + 质量评估 ──────────────────
+          stage1:
+          - prompt.adaptive_rag_stage1_prompt    # 用 ret_psg_top5 构建 prompt
+          - generation.generate
+          - custom.adaptive_rag_after_stage1     # 解析 <|satisfied|>，更新 stage_ls
+
+          # ── 阶段2：top-10 生成 + 质量评估 ─────────────────
+          stage2:
+          - prompt.adaptive_rag_stage2_prompt    # 用 ret_psg_top5+ext5 构建 prompt
+          - generation.generate
+          - custom.adaptive_rag_after_stage2     # 解析 <|satisfied|>，更新 stage_ls
+
+          # ── 阶段3：LLM 重写查询 + 重检索 + 最终生成 ──────────
+          stage3:
+          - prompt.adaptive_rag_rewrite_prompt   # 根据前两阶段结果重写查询
+          - generation.generate                  # LLM 生成重写查询词 → ans_ls
+          - custom.adaptive_rag_extract_rewrite  # 提取 <|rewrite_query|> → subquery_list
+          - ragflow_retriever.ragflow_retriever_search:
+              input:
+                query_list: subquery_list        # 使用重写查询重新检索 → ret_psg
+          - custom.adaptive_rag_merge_passages   # 合并 top5+ext5+sub → all_passages
+          - prompt.adaptive_rag_stage3_prompt    # 用 all_passages 构建最终 prompt
+          - generation.generate
+          - custom.adaptive_rag_done             # 标记 stage_ls = "done"
+
+          # ── 已完成：跳过 ──────────────────────────────────
+          done: []
+
+# ── 提取最终答案 & 评估 ──────────────────────────────────────
+- custom.output_extract_from_boxed
+- evaluation.evaluate
