@@ -239,69 +239,84 @@ async def query_stream_endpoint(req: QueryRequest):
 def _extract_sources(result: Dict[str, Any]) -> List[SourceChunk]:
     """Extract cited source chunks from pipeline snapshots.
 
-    Reads ``memory_ret_src`` written by ragflow_retriever_search steps.
-    Each snapshot stores a list-of-lists: outer = per-query, inner = per-chunk.
-    All chunks across every retrieval step are collected and deduplicated by
-    chunk_id (falling back to content hash).
+    Reads ``memory_ret_psg`` from every ``ragflow_retriever_search`` snapshot.
+    Each passage may carry an invisible metadata prefix written by the
+    retriever (\\x02{...}\\x03\\n).  When present, doc_name / doc_id /
+    chunk_id / score are recovered from it.  When absent, the passage text
+    itself is used as the chunk content with a plain title.
+
+    Chunks are deduplicated by chunk_id (or content fingerprint as fallback)
+    across all retrieval stages (initial + stage-3 re-retrieval).
     """
     if result is None:
         return []
+
+    try:
+        from servers.ragflow_retriever.src.ragflow_retriever import (
+            decode_passage_meta,
+            strip_passage_meta,
+        )
+    except Exception:
+        decode_passage_meta = lambda p: None   # noqa: E731
+        strip_passage_meta  = lambda p: p      # noqa: E731
 
     seen: set = set()
     chunks: List[SourceChunk] = []
     counter = 0
 
     for snap in result.get("all_results", []):
-        step = snap.get("step", "")
-        if "ragflow_retriever_search" not in step:
+        if "ragflow_retriever_search" not in snap.get("step", ""):
             continue
         mem = snap.get("memory", {})
-        ret_src = mem.get("memory_ret_src") or mem.get("ret_src")
-        ret_psg = mem.get("memory_ret_psg") or mem.get("ret_psg")
-
-        if not ret_src:
-            # Fallback: build SourceChunk from plain passage text when ret_src
-            # is absent (e.g. pipeline built before this change was deployed).
-            if not ret_psg:
-                continue
-            per_query = ret_psg if isinstance(ret_psg[0], list) else [ret_psg]
-            for passages in per_query:
-                for psg in passages:
-                    content = str(psg).strip()
-                    if not content:
-                        continue
-                    key = content[:120]
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    counter += 1
-                    title = content.split("\n")[0][:60] or f"Chunk {counter}"
-                    chunks.append(SourceChunk(id=counter, title=title, content=content))
+        raw_psg = mem.get("memory_ret_psg") or mem.get("ret_psg")
+        if not raw_psg:
             continue
 
-        # ret_src is list-of-lists; normalise to flat list
-        per_query_src = ret_src if (ret_src and isinstance(ret_src[0], list)) else [ret_src]
-        for src_list in per_query_src:
-            for src in src_list:
-                if not isinstance(src, dict):
+        # Normalise to list-of-lists (outer = per-query, inner = per-passage)
+        if isinstance(raw_psg, list) and raw_psg and not isinstance(raw_psg[0], list):
+            per_query: List[List[str]] = [raw_psg]
+        else:
+            per_query = raw_psg  # type: ignore[assignment]
+
+        for passages in per_query:
+            if not isinstance(passages, list):
+                continue
+            for psg in passages:
+                psg_str = str(psg)
+                meta    = decode_passage_meta(psg_str)
+                content = strip_passage_meta(psg_str).strip()
+
+                if not content:
                     continue
-                chunk_id = src.get("chunk_id") or ""
-                content = src.get("content", "").strip()
-                key = chunk_id or content[:120]
-                if not key or key in seen:
+
+                # Dedup key: chunk_id if available, else content fingerprint
+                chunk_id = (meta or {}).get("ci") or ""
+                key      = chunk_id or content[:120]
+                if key in seen:
                     continue
                 seen.add(key)
                 counter += 1
-                doc_name = src.get("doc_name") or ""
-                title = doc_name or (content.split("\n")[0][:60]) or f"Chunk {counter}"
+
+                if meta:
+                    doc_name = meta.get("dn") or ""
+                    doc_id   = meta.get("di") or ""
+                    try:
+                        score = float(meta["sc"]) if meta.get("sc") is not None else None
+                    except (TypeError, ValueError):
+                        score = None
+                else:
+                    doc_name = doc_id = ""
+                    score    = None
+
+                title = doc_name or content.split("\n")[0][:60] or f"Chunk {counter}"
                 chunks.append(SourceChunk(
-                    id=counter,
-                    title=title,
-                    content=content,
-                    doc_name=doc_name or None,
-                    doc_id=src.get("doc_id") or None,
-                    chunk_id=chunk_id or None,
-                    score=src.get("score") or None,
+                    id       = counter,
+                    title    = title,
+                    content  = content,
+                    doc_name = doc_name or None,
+                    doc_id   = doc_id   or None,
+                    chunk_id = chunk_id or None,
+                    score    = score,
                 ))
 
     return chunks
