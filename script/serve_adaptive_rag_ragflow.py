@@ -34,7 +34,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import uvicorn
 import yaml
@@ -83,9 +83,16 @@ class QueryRequest(BaseModel):
     query: str
 
 
+class SourceChunk(BaseModel):
+    id: int
+    title: str
+    content: str
+
+
 class QueryResponse(BaseModel):
     answer: str
     thinking: Optional[str] = None
+    sources: List[SourceChunk] = []
 
 
 @fastapi_app.on_event("startup")
@@ -141,18 +148,32 @@ async def query_endpoint(req: QueryRequest):
 
         from ultrarag.client import execute_pipeline
 
+        # Collect sources emitted during the pipeline run.
+        collected_sources: List[Dict[str, Any]] = []
+        seen_ids: set = set()
+
+        async def _source_collector(event: Dict[str, Any]) -> None:
+            if event.get("type") == "sources":
+                for chunk in event.get("data", []):
+                    cid = chunk.get("id")
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        collected_sources.append(chunk)
+
         # Serialize calls: stdio MCP servers handle one request at a time
         async with _request_lock:
             result = await execute_pipeline(
                 _pipeline_client,
                 _pipeline_context,
                 return_all=True,
+                stream_callback=_source_collector,
                 override_params=override,
             )
 
         answer   = _extract_answer(result)
         thinking = _extract_thinking(result)
-        return QueryResponse(answer=answer, thinking=thinking)
+        sources  = [SourceChunk(**c) for c in collected_sources]
+        return QueryResponse(answer=answer, thinking=thinking, sources=sources)
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -179,7 +200,17 @@ async def query_stream_endpoint(req: QueryRequest):
     queue: asyncio.Queue = asyncio.Queue()
     _SENTINEL = object()
 
+    # Accumulate all source chunks across every retrieval step.
+    all_sources: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
     async def _callback(event: Dict[str, Any]) -> None:
+        if event.get("type") == "sources":
+            for chunk in event.get("data", []):
+                cid = chunk.get("id")
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    all_sources.append(chunk)
         await queue.put(event)
 
     async def _run_pipeline():
@@ -201,7 +232,7 @@ async def query_stream_endpoint(req: QueryRequest):
                 )
 
             answer = _extract_answer(result)
-            await queue.put({"type": "done", "answer": answer})
+            await queue.put({"type": "done", "answer": answer, "sources": all_sources})
         except Exception as exc:
             await queue.put({"type": "error", "detail": str(exc)})
         finally:
