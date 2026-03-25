@@ -27,7 +27,7 @@ class RAGFlowRetriever:
         )
         mcp_inst.tool(
             self.ragflow_retriever_search,
-            output="q_ls,top_k->ret_psg",
+            output="q_ls,top_k->ret_psg,ret_src",
         )
 
         # Internal state
@@ -88,7 +88,7 @@ class RAGFlowRetriever:
         """
         effective_top_k = top_k if top_k is not None else self.top_k
 
-        async def _search_one(query: str) -> List[str]:
+        async def _search_one(query: str):
             payload: Dict[str, Any] = {
                 "question": query,
                 "dataset_ids": self.dataset_ids,
@@ -110,7 +110,7 @@ class RAGFlowRetriever:
                         app.logger.error(
                             f"[ragflow_retriever] Request failed status={resp.status} body={err_text}"
                         )
-                        return []
+                        return [], []
                     data = await resp.json()
 
             # Log full response to help diagnose structure issues
@@ -121,7 +121,7 @@ class RAGFlowRetriever:
                     f"[ragflow_retriever] API error code={data.get('code')} "
                     f"message={data.get('message', '')}"
                 )
-                return []
+                return [], []
 
             # RAGFlow v0.14+ uses "retcode"/"retmsg" instead of "code"/"message"
             # Handle both response conventions
@@ -135,6 +135,7 @@ class RAGFlowRetriever:
             app.logger.warning(f"[ragflow_retriever] found {len(chunks)} chunks")
 
             passages: List[str] = []
+            sources: List[Dict[str, Any]] = []
             for chunk in chunks:
                 # field may be "content", "content_with_weight", or "text"
                 content: str = (
@@ -146,10 +147,19 @@ class RAGFlowRetriever:
                 if self.max_doc_len and len(content) > self.max_doc_len:
                     content = content[: self.max_doc_len]
                 passages.append(content)
-            return passages
+                sources.append({
+                    "doc_name": chunk.get("document_keyword") or chunk.get("docnm_kwd") or "",
+                    "doc_id": chunk.get("document_id") or chunk.get("doc_id") or "",
+                    "chunk_id": chunk.get("chunk_id") or chunk.get("id") or "",
+                    "score": chunk.get("score") or chunk.get("similarity") or 0.0,
+                    "content": content,
+                })
+            return passages, sources
 
-        results = await asyncio.gather(*[_search_one(q) for q in query_list])
-        return {"ret_psg": list(results)}
+        raw_results = await asyncio.gather(*[_search_one(q) for q in query_list])
+        ret_psg = [r[0] for r in raw_results]
+        ret_src = [r[1] for r in raw_results]
+        return {"ret_psg": ret_psg, "ret_src": ret_src}
 
 
 retriever = RAGFlowRetriever(app)
