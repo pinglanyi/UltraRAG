@@ -25,7 +25,7 @@ app = UltraRAG_MCP_Server("ragflow_retriever")
 # Format (single line, at passage start):  \x02{"dn":...,"di":...,"ci":...,"sc":...}\x03\n
 _META_START = "\x02"
 _META_END   = "\x03"
-_META_RE    = re.compile(r"^\x02(\{.*?\})\x03\n", re.DOTALL)
+_META_RE    = re.compile(r"^\x02(.*?)\x03\n", re.DOTALL)
 
 
 def _encode_meta(doc_name: str, doc_id: str, chunk_id: str, score: float) -> str:
