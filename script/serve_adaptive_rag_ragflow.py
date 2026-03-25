@@ -85,8 +85,12 @@ class QueryRequest(BaseModel):
 
 class SourceChunk(BaseModel):
     id: int
-    title: str
-    content: str
+    title: str        # document file name (falls back to first line of content)
+    content: str      # passage text
+    doc_name: Optional[str] = None   # original document filename from RAGFlow
+    doc_id: Optional[str] = None     # RAGFlow document ID
+    chunk_id: Optional[str] = None   # RAGFlow chunk ID
+    score: Optional[float] = None    # retrieval relevance score
 
 
 class QueryResponse(BaseModel):
@@ -148,31 +152,18 @@ async def query_endpoint(req: QueryRequest):
 
         from ultrarag.client import execute_pipeline
 
-        # Collect sources emitted during the pipeline run.
-        collected_sources: List[Dict[str, Any]] = []
-        seen_ids: set = set()
-
-        async def _source_collector(event: Dict[str, Any]) -> None:
-            if event.get("type") == "sources":
-                for chunk in event.get("data", []):
-                    cid = chunk.get("id")
-                    if cid not in seen_ids:
-                        seen_ids.add(cid)
-                        collected_sources.append(chunk)
-
         # Serialize calls: stdio MCP servers handle one request at a time
         async with _request_lock:
             result = await execute_pipeline(
                 _pipeline_client,
                 _pipeline_context,
                 return_all=True,
-                stream_callback=_source_collector,
                 override_params=override,
             )
 
         answer   = _extract_answer(result)
         thinking = _extract_thinking(result)
-        sources  = [SourceChunk(**c) for c in collected_sources]
+        sources  = _extract_sources(result)
         return QueryResponse(answer=answer, thinking=thinking, sources=sources)
 
     except Exception as exc:
@@ -200,17 +191,7 @@ async def query_stream_endpoint(req: QueryRequest):
     queue: asyncio.Queue = asyncio.Queue()
     _SENTINEL = object()
 
-    # Accumulate all source chunks across every retrieval step.
-    all_sources: List[Dict[str, Any]] = []
-    seen_ids: set = set()
-
     async def _callback(event: Dict[str, Any]) -> None:
-        if event.get("type") == "sources":
-            for chunk in event.get("data", []):
-                cid = chunk.get("id")
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    all_sources.append(chunk)
         await queue.put(event)
 
     async def _run_pipeline():
@@ -231,8 +212,9 @@ async def query_stream_endpoint(req: QueryRequest):
                     override_params=override,
                 )
 
-            answer = _extract_answer(result)
-            await queue.put({"type": "done", "answer": answer, "sources": all_sources})
+            answer  = _extract_answer(result)
+            sources = [s.model_dump() for s in _extract_sources(result)]
+            await queue.put({"type": "done", "answer": answer, "sources": sources})
         except Exception as exc:
             await queue.put({"type": "error", "detail": str(exc)})
         finally:
@@ -253,6 +235,77 @@ async def query_stream_endpoint(req: QueryRequest):
 # ─────────────────────────────────────────────────────────────────────────────
 # Result extraction helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_sources(result: Dict[str, Any]) -> List[SourceChunk]:
+    """Extract cited source chunks from pipeline snapshots.
+
+    Reads ``memory_ret_src`` written by ragflow_retriever_search steps.
+    Each snapshot stores a list-of-lists: outer = per-query, inner = per-chunk.
+    All chunks across every retrieval step are collected and deduplicated by
+    chunk_id (falling back to content hash).
+    """
+    if result is None:
+        return []
+
+    seen: set = set()
+    chunks: List[SourceChunk] = []
+    counter = 0
+
+    for snap in result.get("all_results", []):
+        step = snap.get("step", "")
+        if "ragflow_retriever_search" not in step:
+            continue
+        mem = snap.get("memory", {})
+        ret_src = mem.get("memory_ret_src") or mem.get("ret_src")
+        ret_psg = mem.get("memory_ret_psg") or mem.get("ret_psg")
+
+        if not ret_src:
+            # Fallback: build SourceChunk from plain passage text when ret_src
+            # is absent (e.g. pipeline built before this change was deployed).
+            if not ret_psg:
+                continue
+            per_query = ret_psg if isinstance(ret_psg[0], list) else [ret_psg]
+            for passages in per_query:
+                for psg in passages:
+                    content = str(psg).strip()
+                    if not content:
+                        continue
+                    key = content[:120]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    counter += 1
+                    title = content.split("\n")[0][:60] or f"Chunk {counter}"
+                    chunks.append(SourceChunk(id=counter, title=title, content=content))
+            continue
+
+        # ret_src is list-of-lists; normalise to flat list
+        per_query_src = ret_src if (ret_src and isinstance(ret_src[0], list)) else [ret_src]
+        for src_list in per_query_src:
+            for src in src_list:
+                if not isinstance(src, dict):
+                    continue
+                chunk_id = src.get("chunk_id") or ""
+                content = src.get("content", "").strip()
+                key = chunk_id or content[:120]
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                counter += 1
+                doc_name = src.get("doc_name") or ""
+                title = doc_name or (content.split("\n")[0][:60]) or f"Chunk {counter}"
+                chunks.append(SourceChunk(
+                    id=counter,
+                    title=title,
+                    content=content,
+                    doc_name=doc_name or None,
+                    doc_id=src.get("doc_id") or None,
+                    chunk_id=chunk_id or None,
+                    score=src.get("score") or None,
+                ))
+
+    return chunks
+
 
 def _first_nonempty(val: Any) -> str:
     """Return the first non-empty string from a list, or the value itself."""
